@@ -39,12 +39,25 @@ async def add_to_qdrant(message: MessageIn):
     # Формируем текст для embedding (например, question+answer для максимального контекста)
     embedding_text = (message.question or "") + " " + (message.answer or "")
     embedding = get_embedding(embedding_text)
+
+    # Обработка времени: created_at_ts всегда float, даже если передали свою дату
+    if message.created_at:
+        try:
+            dt = datetime.fromisoformat(message.created_at)
+        except Exception:
+            dt = datetime.utcnow()
+    else:
+        dt = datetime.utcnow()
+    created_at_str = dt.isoformat()
+    created_at_ts = dt.timestamp()
+
     payload = {
         "user_id": message.user_id,
         "role": message.role,
         "question": message.question,
         "answer": message.answer,
-        "created_at": message.created_at or datetime.utcnow().isoformat(),
+        "created_at": created_at_str,
+        "created_at_ts": created_at_ts,
         "task_id": message.task_id
     }
     client.upsert(
