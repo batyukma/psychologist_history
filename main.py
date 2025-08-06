@@ -9,7 +9,6 @@ from uuid import uuid4
 
 app = FastAPI()
 
-# === КОНФИГ ===
 QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "psychologist_history")
@@ -22,24 +21,29 @@ openai.api_key = OPENAI_API_KEY
 class MessageIn(BaseModel):
     user_id: str
     role: str
-    text: str
+    question: str = None
+    answer: str = None
     created_at: str = None  # ISO format
     task_id: int = None
 
 def get_embedding(text: str):
-    response = openai.embeddings.create(
+    # Для embedding можно брать question+answer, или только question/answer (на твой выбор)
+    source = (text or "")  # чтобы не было ошибки, если оба None
+    return openai.embeddings.create(
         model=EMBEDDING_MODEL,
-        input=text
-    )
-    return response.data[0].embedding
+        input=source
+    ).data[0].embedding
 
 @app.post("/add_to_qdrant")
 async def add_to_qdrant(message: MessageIn):
-    embedding = get_embedding(message.text)
+    # Формируем текст для embedding (например, question+answer для максимального контекста)
+    embedding_text = (message.question or "") + " " + (message.answer or "")
+    embedding = get_embedding(embedding_text)
     payload = {
         "user_id": message.user_id,
         "role": message.role,
-        "text": message.text,
+        "question": message.question,
+        "answer": message.answer,
         "created_at": message.created_at or datetime.utcnow().isoformat(),
         "task_id": message.task_id
     }
@@ -47,13 +51,13 @@ async def add_to_qdrant(message: MessageIn):
         collection_name=QDRANT_COLLECTION,
         points=[
             PointStruct(
-                id=str(uuid4()),    # теперь id всегда валиден!
+                id=str(uuid4()),
                 vector=embedding,
                 payload=payload
             )
         ]
     )
-    return {"status": "ok", "msg": "Message added to Qdrant"}
+    return {"status": "ok", "msg": "Structured message added to Qdrant"}
 
 @app.get("/")
 def root():
