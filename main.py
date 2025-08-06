@@ -5,6 +5,7 @@ from qdrant_client.models import PointStruct
 from datetime import datetime
 import openai
 import os
+from uuid import uuid4
 
 app = FastAPI()
 
@@ -46,7 +47,7 @@ async def add_to_qdrant(message: MessageIn):
         collection_name=QDRANT_COLLECTION,
         points=[
             PointStruct(
-                id=None,
+                id=str(uuid4()),    # теперь id всегда валиден!
                 vector=embedding,
                 payload=payload
             )
