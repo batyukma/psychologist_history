@@ -52,7 +52,7 @@ async def add_to_qdrant(message: MessageIn):
     created_at_ts = dt.timestamp()
 
     payload = {
-        "user_id": message.user_id,
+        "user_id": str(message.user_id),
         "role": message.role,
         "question": message.question,
         "answer": message.answer,
