@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from typing import Optional, Dict, Any, List
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 from datetime import datetime, timezone
@@ -22,21 +23,24 @@ openai.api_key = OPENAI_API_KEY
 # === Модели ===
 class MessageIn(BaseModel):
     user_id: str
-    role: str
-    question: str | None = None
-    answer: str | None = None
-    created_at: str | None = None
-    task_id: int | None = None
+    role: str                           # "user" | "assistant" | др.
+    question: Optional[str] = None
+    answer: Optional[str] = None
+    created_at: Optional[str] = None
+    task_id: Optional[int] = None
+    event: Optional[str] = None         # "task_update" | "task_update_reply" | "button_click" | "message" ...
+    meta: Optional[Dict[str, Any]] = None
+    interaction: Optional[Dict[str, Any]] = None
 
 class ReminderLog(BaseModel):
     user_id: str
     task_id: int
     reminder_text: str
-    bot_message_id: str | None = None
-    created_at: str | None = None
+    bot_message_id: Optional[str] = None
+    created_at: Optional[str] = None
 
 # === Утилиты ===
-def _parse_iso(dt_str: str | None) -> datetime:
+def _parse_iso(dt_str: Optional[str]) -> datetime:
     """Парсинг ISO8601 с поддержкой 'Z' и без таймзоны."""
     if not dt_str:
         return datetime.now(timezone.utc)
@@ -50,14 +54,14 @@ def _parse_iso(dt_str: str | None) -> datetime:
     except Exception:
         return datetime.now(timezone.utc)
 
-def get_embedding(text: str):
+def get_embedding(text: str) -> List[float]:
     """Создание эмбеддинга для текста."""
     return openai.embeddings.create(
         model=EMBEDDING_MODEL,
         input=(text or " ")
     ).data[0].embedding
 
-def _upsert_to_qdrant(vector: list[float], payload: dict):
+def _upsert_to_qdrant(vector: List[float], payload: dict):
     """Упрощённая вставка в Qdrant."""
     client.upsert(
         collection_name=QDRANT_COLLECTION,
@@ -68,18 +72,32 @@ def _upsert_to_qdrant(vector: list[float], payload: dict):
 @app.post("/add_to_qdrant")
 async def add_to_qdrant(message: MessageIn):
     dt = _parse_iso(message.created_at)
+
+    # Текст, по которому строим эмбеддинг (и сохраняем в payload для отладки):
+    embedding_text = ((message.question or "") + " " + (message.answer or "")).strip() or " "
+
+    # Умный дефолт события — сохраняет обратную совместимость:
+    inferred_event = (
+        message.event
+        or ("task_update" if (message.task_id is not None and message.role == "assistant" and message.question is None) else "message")
+    )
+
     payload = {
         "user_id": str(message.user_id),
         "role": message.role,
         "question": message.question,
         "answer": message.answer,
+        "text": embedding_text,
         "created_at": dt.isoformat(),
         "created_at_ts": dt.timestamp(),
-        "task_id": message.task_id
+        "task_id": message.task_id,
+        "event": inferred_event,
+        "meta": message.meta,
+        "interaction": message.interaction,
     }
-    embedding_text = (message.question or "") + " " + (message.answer or "")
+
     _upsert_to_qdrant(get_embedding(embedding_text), payload)
-    return {"status": "ok", "msg": "Structured message added to Qdrant"}
+    return {"status": "ok", "payload": payload}
 
 @app.post("/log_reminder")
 async def log_reminder(body: ReminderLog):
@@ -89,6 +107,7 @@ async def log_reminder(body: ReminderLog):
         "role": "assistant",
         "question": None,
         "answer": body.reminder_text,
+        "text": body.reminder_text,
         "created_at": dt.isoformat(),
         "created_at_ts": dt.timestamp(),
         "task_id": body.task_id,
@@ -98,7 +117,7 @@ async def log_reminder(body: ReminderLog):
         "is_reminder": True
     }
     _upsert_to_qdrant(get_embedding(body.reminder_text), payload)
-    return {"status": "ok", "msg": "Reminder logged to Qdrant"}
+    return {"status": "ok", "payload": payload}
 
 @app.get("/")
 def root():
