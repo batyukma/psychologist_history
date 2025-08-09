@@ -1,6 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from pydantic import BaseModel
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 from datetime import datetime, timezone
@@ -100,23 +100,54 @@ async def add_to_qdrant(message: MessageIn):
     return {"status": "ok", "payload": payload}
 
 @app.post("/log_reminder")
-async def log_reminder(body: ReminderLog):
-    dt = _parse_iso(body.created_at)
+async def log_reminder(body: Union[ReminderLog, MessageIn] = Body(...)):
+    """
+    Принимает как ReminderLog (чистый формат), так и MessageIn-подобный JSON
+    из текущих нод n8n. Автоматически приводит данные к нужному виду.
+    """
+    # Определяем формат
+    if isinstance(body, ReminderLog):
+        dt = _parse_iso(body.created_at)
+        reminder_text = body.reminder_text or " "
+        task_id = body.task_id
+        bot_message_id = body.bot_message_id
+    else:
+        # Пришёл MessageIn
+        msg: MessageIn = body  # type: ignore
+        dt = _parse_iso(msg.created_at)
+        # reminder_text: answer > meta.task_text > question
+        reminder_text = (
+            (msg.answer or "").strip()
+            or str((msg.meta or {}).get("task_text") or "").strip()
+            or (msg.question or "").strip()
+            or " "
+        )
+        # task_id может быть не int
+        try:
+            task_id = int(msg.task_id) if msg.task_id is not None else None
+        except Exception:
+            task_id = None
+        bot_message_id = None
+        if msg.meta and "bot_message_id" in msg.meta:
+            bot_message_id = str(msg.meta["bot_message_id"])
+
+    # Формируем payload
     payload = {
         "user_id": str(body.user_id),
         "role": "assistant",
         "question": None,
-        "answer": body.reminder_text,
-        "text": body.reminder_text,
+        "answer": reminder_text,
+        "text": reminder_text,
         "created_at": dt.isoformat(),
         "created_at_ts": dt.timestamp(),
-        "task_id": body.task_id,
+        "task_id": task_id,
         "event": "reminder",
         "reminder_type": "24h",
-        "bot_message_id": body.bot_message_id,
+        "bot_message_id": bot_message_id,
         "is_reminder": True
     }
-    _upsert_to_qdrant(get_embedding(body.reminder_text), payload)
+
+    _upsert_to_qdrant(get_embedding(reminder_text), payload)
     return {"status": "ok", "payload": payload}
 
 @app.get("/")
