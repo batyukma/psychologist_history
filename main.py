@@ -38,6 +38,9 @@ class ReminderLog(BaseModel):
     reminder_text: str
     bot_message_id: Optional[str] = None
     created_at: Optional[str] = None
+    # добавили: можно прислать исходный текст задания,
+    # чтобы писать его в "question"
+    task_text: Optional[str] = None
 
 # === Утилиты ===
 def _parse_iso(dt_str: Optional[str]) -> datetime:
@@ -56,9 +59,10 @@ def _parse_iso(dt_str: Optional[str]) -> datetime:
 
 def get_embedding(text: str) -> List[float]:
     """Создание эмбеддинга для текста."""
+    safe_text = (text or " ").strip() or " "
     return openai.embeddings.create(
         model=EMBEDDING_MODEL,
-        input=(text or " ")
+        input=safe_text
     ).data[0].embedding
 
 def _upsert_to_qdrant(vector: List[float], payload: dict):
@@ -104,18 +108,29 @@ async def log_reminder(body: Union[ReminderLog, MessageIn] = Body(...)):
     """
     Принимает как ReminderLog (чистый формат), так и MessageIn-подобный JSON
     из текущих нод n8n. Автоматически приводит данные к нужному виду.
+    Сохраняем:
+      - question = исходный текст задания,
+      - answer = текст напоминания,
+      - text = склейка "question + answer" (или только answer, если question пуст).
     """
-    # Определяем формат
+    # Определяем формат входа
     if isinstance(body, ReminderLog):
         dt = _parse_iso(body.created_at)
-        reminder_text = body.reminder_text or " "
+        reminder_text = (body.reminder_text or "").strip() or " "
+        source_task_text = (body.task_text or "").strip()  # может быть пустым
         task_id = body.task_id
         bot_message_id = body.bot_message_id
+        user_id = body.user_id
     else:
         # Пришёл MessageIn
         msg: MessageIn = body  # type: ignore
         dt = _parse_iso(msg.created_at)
-        # reminder_text: answer > meta.task_text > question
+        # Текст задания берём из question или meta.task_text
+        source_task_text = (
+            (msg.question or "").strip()
+            or str((msg.meta or {}).get("task_text") or "").strip()
+        )
+        # Текст напоминания: answer > meta.task_text > question
         reminder_text = (
             (msg.answer or "").strip()
             or str((msg.meta or {}).get("task_text") or "").strip()
@@ -130,14 +145,19 @@ async def log_reminder(body: Union[ReminderLog, MessageIn] = Body(...)):
         bot_message_id = None
         if msg.meta and "bot_message_id" in msg.meta:
             bot_message_id = str(msg.meta["bot_message_id"])
+        user_id = msg.user_id
 
-    # Формируем payload
+    # Формируем итоговые поля
+    question = source_task_text or None
+    answer = reminder_text
+    combined_text = (f"{source_task_text} {reminder_text}".strip() if source_task_text else reminder_text)
+
     payload = {
-        "user_id": str(body.user_id),
+        "user_id": str(user_id),
         "role": "assistant",
-        "question": None,
-        "answer": reminder_text,
-        "text": reminder_text,
+        "question": question,
+        "answer": answer,
+        "text": combined_text,
         "created_at": dt.isoformat(),
         "created_at_ts": dt.timestamp(),
         "task_id": task_id,
@@ -147,9 +167,10 @@ async def log_reminder(body: Union[ReminderLog, MessageIn] = Body(...)):
         "is_reminder": True
     }
 
-    _upsert_to_qdrant(get_embedding(reminder_text), payload)
+    _upsert_to_qdrant(get_embedding(combined_text), payload)
     return {"status": "ok", "payload": payload}
 
 @app.get("/")
 def root():
     return {"status": "ok"}
+
