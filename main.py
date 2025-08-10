@@ -38,9 +38,8 @@ class ReminderLog(BaseModel):
     reminder_text: str
     bot_message_id: Optional[str] = None
     created_at: Optional[str] = None
-    # добавили: можно прислать исходный текст задания,
-    # чтобы писать его в "question"
     task_text: Optional[str] = None
+    reminder_type: Optional[str] = "24h"   # <— добавили тип напоминания
 
 # === Утилиты ===
 def _parse_iso(dt_str: Optional[str]) -> datetime:
@@ -111,7 +110,9 @@ async def log_reminder(body: Union[ReminderLog, MessageIn] = Body(...)):
     Сохраняем:
       - question = исходный текст задания,
       - answer = текст напоминания,
-      - text = склейка "question + answer" (или только answer, если question пуст).
+      - text = склейка "question + answer" (или только answer, если question пуст),
+      - reminder_type: "24h" | "5d" | другое,
+      - bot_message_id: id исходного сообщения (для reply в Telegram).
     """
     # Определяем формат входа
     if isinstance(body, ReminderLog):
@@ -119,8 +120,9 @@ async def log_reminder(body: Union[ReminderLog, MessageIn] = Body(...)):
         reminder_text = (body.reminder_text or "").strip() or " "
         source_task_text = (body.task_text or "").strip()  # может быть пустым
         task_id = body.task_id
-        bot_message_id = body.bot_message_id
+        bot_message_id = body.bot_message_id or None
         user_id = body.user_id
+        reminder_type = (body.reminder_type or "24h").strip() or "24h"
     else:
         # Пришёл MessageIn
         msg: MessageIn = body  # type: ignore
@@ -146,6 +148,7 @@ async def log_reminder(body: Union[ReminderLog, MessageIn] = Body(...)):
         if msg.meta and "bot_message_id" in msg.meta:
             bot_message_id = str(msg.meta["bot_message_id"])
         user_id = msg.user_id
+        reminder_type = str((msg.meta or {}).get("reminder_type") or "24h")
 
     # Формируем итоговые поля
     question = source_task_text or None
@@ -162,7 +165,7 @@ async def log_reminder(body: Union[ReminderLog, MessageIn] = Body(...)):
         "created_at_ts": dt.timestamp(),
         "task_id": task_id,
         "event": "reminder",
-        "reminder_type": "24h",
+        "reminder_type": reminder_type,
         "bot_message_id": bot_message_id,
         "is_reminder": True
     }
@@ -173,4 +176,3 @@ async def log_reminder(body: Union[ReminderLog, MessageIn] = Body(...)):
 @app.get("/")
 def root():
     return {"status": "ok"}
-
